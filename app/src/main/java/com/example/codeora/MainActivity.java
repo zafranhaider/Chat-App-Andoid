@@ -1,16 +1,17 @@
 package com.example.codeora;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -23,11 +24,9 @@ import android.widget.ProgressBar;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -38,52 +37,49 @@ public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private ProgressBar progressBar;
     private ValueCallback<Uri[]> filePathCallback;
+    private boolean hasRecordAudioPermission = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Request necessary permissions
         requestNecessaryPermissions();
 
         webView = findViewById(R.id.webview);
         progressBar = findViewById(R.id.progressBar);
 
-        if (!NetworkUtil.isNetworkAvailable(this)) {
-            showErrorPage();
-            return;
-        }
-
         webView.setWebViewClient(new CustomWebViewClient());
         webView.setWebChromeClient(new CustomWebChromeClient());
-
         WebSettings webSettings = webView.getSettings();
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
-        webSettings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
-        webSettings.setLoadWithOverviewMode(true);
-
-        // Enable built-in zoom controls, if needed
+        webSettings.setMediaPlaybackRequiresUserGesture(false); // Optional, to auto-play media
+        webSettings.setAllowFileAccess(true);
+        webSettings.setAllowContentAccess(true);
+        webSettings.setAllowFileAccessFromFileURLs(true);
+        webSettings.setAllowUniversalAccessFromFileURLs(true);
         webSettings.setBuiltInZoomControls(true);
         webSettings.setDisplayZoomControls(false);
+        webSettings.setSupportMultipleWindows(true);
+        webSettings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        webSettings.setLoadWithOverviewMode(true);
 
         // Set the custom user agent string
         String defaultUserAgent = webSettings.getUserAgentString();
         webSettings.setUserAgentString(defaultUserAgent + " MyApp");
 
-        webView.addJavascriptInterface(new WebAppInterface(), "Android");
+        webView.addJavascriptInterface(new WebAppInterface(this), "Android");
         webView.loadUrl("https://chat-app-theta-puce-66.vercel.app/");
     }
 
     private void requestNecessaryPermissions() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                    new String[]{Manifest.permission.RECORD_AUDIO},
                     PERMISSION_REQUEST_CODE);
+        } else {
+            hasRecordAudioPermission = true;
         }
     }
 
@@ -91,20 +87,11 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == PERMISSION_REQUEST_CODE) {
-            boolean allPermissionsGranted = true;
-            for (int result : grantResults) {
-                if (result != PackageManager.PERMISSION_GRANTED) {
-                    allPermissionsGranted = false;
-                    break;
-                }
-            }
-            if (allPermissionsGranted) {
-                // All permissions granted, proceed with the functionality
-                Log.d(TAG, "Permissions granted");
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                hasRecordAudioPermission = true;
             } else {
-                // Permission denied, handle accordingly
-                Log.d(TAG, "Permissions denied");
-                Toast.makeText(this, "Permissions denied. The app needs these permissions to function properly.", Toast.LENGTH_SHORT).show();
+                hasRecordAudioPermission = false;
+                Toast.makeText(this, "Permission denied. The app needs this permission to function properly.", Toast.LENGTH_SHORT).show();
             }
         }
     }
@@ -165,9 +152,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public class WebAppInterface {
+        Context mContext;
+
+        WebAppInterface(Context c) {
+            mContext = c;
+        }
+
         @JavascriptInterface
         public void showToast(String toast) {
-            Toast.makeText(MainActivity.this, toast, Toast.LENGTH_SHORT).show();
+            Toast.makeText(mContext, toast, Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -215,36 +208,54 @@ public class MainActivity extends AppCompatActivity {
 
     private class CustomWebChromeClient extends WebChromeClient {
         @Override
+        public void onPermissionRequest(final PermissionRequest request) {
+            if (hasRecordAudioPermission) {
+                request.grant(request.getResources());
+            } else {
+                ActivityCompat.requestPermissions(MainActivity.this,
+                        new String[]{Manifest.permission.RECORD_AUDIO},
+                        PERMISSION_REQUEST_CODE);
+            }
+        }
+
+        @Override
         public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
             if (MainActivity.this.filePathCallback != null) {
                 MainActivity.this.filePathCallback.onReceiveValue(null);
             }
             MainActivity.this.filePathCallback = filePathCallback;
-
             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             intent.setType("*/*");
             startActivityForResult(Intent.createChooser(intent, "File Chooser"), FILE_CHOOSER_REQUEST_CODE);
             return true;
         }
+
+        @Override
+        public void onProgressChanged(WebView view, int newProgress) {
+            progressBar.setProgress(newProgress);
+            if (newProgress == 100) {
+                progressBar.setVisibility(ProgressBar.GONE);
+                Log.d(TAG, "Page fully loaded");
+            }
+            super.onProgressChanged(view, newProgress);
+        }
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+    protected void onActivityResult(int requestCode, int resultCode, @androidx.annotation.Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == FILE_CHOOSER_REQUEST_CODE) {
-            if (filePathCallback == null) return;
-            Uri[] results = null;
-            if (resultCode == RESULT_OK) {
-                if (data != null) {
+            if (filePathCallback != null) {
+                Uri[] results = null;
+                if (resultCode == RESULT_OK && data != null) {
                     String dataString = data.getDataString();
                     if (dataString != null) {
                         results = new Uri[]{Uri.parse(dataString)};
                     }
                 }
+                filePathCallback.onReceiveValue(results);
+                filePathCallback = null;
             }
-            filePathCallback.onReceiveValue(results);
-            filePathCallback = null;
         }
-    }
-}
+    }}
